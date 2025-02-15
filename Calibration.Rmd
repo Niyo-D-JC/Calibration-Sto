@@ -1,0 +1,87 @@
+---
+title: "Filtre particulaire"
+author: "Niyo D. JC"
+date: "2025-01-30"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+set.seed(123)
+
+# Paramètres du modèle
+mu <- -0.8
+phi <- 0.9
+sigma2 <- 0.09
+sigma <- sqrt(sigma2)
+n <- 252  # Nombre d'observations
+M <- 1000  # Nombre de particules
+
+# Simulation du processus log-volatilité et des rendements
+x_t <- rnorm(n, mean = (mu - mu*phi)/ (1 - phi), sd = sqrt(sigma2 / (1 - phi^2)))
+r_t <- rnorm(n, mean = 0, sd = 1)
+nu_t <- rnorm(n, mean = 0, sd = 1)
+eps_t <- rnorm(n, mean = 0, sd = 1)
+
+for (t in 2:n) {
+  x_t[t] <- mu + phi * (x_t[t - 1] - mu) + sigma * nu_t[t]
+  r_t[t] <- exp(x_t[t] / 2) * eps_t[t]
+}
+```
+
+```{r}
+# Bootstrap Particle Filter
+particles_values <- rnorm(M, mean = (mu-mu*phi) / (1 - phi), sd = sqrt(sigma2 / (1 - phi^2)))
+weights <- rep(1 / M, M)
+x_est <- numeric(n)
+
+for (t in 1:n) {
+  # Propagation
+  particles_values <- mu + phi * (particles_values - mu) + sigma * rnorm(M)
+  
+  # Mise à jour des poids
+  likelihoods <- dnorm(r_t[t], mean = 0, sd = exp(particles_values / 2))
+  weights <- weights * likelihoods
+  weights <- weights / sum(weights)
+  
+  # Estimation de x_t
+  x_est[t] <- sum(weights * particles_values)
+  
+  # Résampling (multinomial)
+  resample_indices <- sample(1:M, size = M, replace = TRUE, prob = weights)
+  particles_values <- particles_values[resample_indices]
+  weights <- rep(1 / M, M)
+}
+r_est <- exp(x_est / 2) * rnorm(n, mean = 0, sd = 1)
+```
+
+```{r}
+# Comparaison avec la fonction particleFilterSVmodel du package pmhtutorial
+if (!require(pmhtutorial)) install.packages("pmhtutorial", repos = "http://cran.us.r-project.org")
+library(pmhtutorial)
+
+theta <- c(mu , phi, sigma)
+sv_results <- particleFilterSVmodel(r_t, theta, noParticles=M)
+```
+
+```{r}
+theta_adj <- c(0, phi, sigma)  # Mettre mu = 0 dans les paramètres
+sv_results <- particleFilterSVmodel(r_t - mu, theta_adj, noParticles = M)  # Centrer les rendements
+```
+
+```{r}
+# Affichage des résultats
+library(ggplot2)
+data_plot <- data.frame(Time = 1:n, True_x = r_t, Estimated_x = r_est, PMH_x = sv_results$xHatFiltered)
+
+ggplot(data_plot, aes(x = Time)) +
+  geom_line(aes(y = True_x, color = "True r_t"), linetype = "dashed") +
+  geom_line(aes(y = Estimated_x, color = "Estimated r_t")) +
+  geom_line(aes(y = PMH_x, color = "PMH Estimated r_t"), linetype = "dotted") +
+  labs(title = "Comparaison des estimations de r_t", y = "x_t") +
+  theme_minimal() +
+  scale_color_manual(values = c("True r_t" = "red", "Estimated r_t" = "blue", "PMH Estimated r_t" = "green"))
+```

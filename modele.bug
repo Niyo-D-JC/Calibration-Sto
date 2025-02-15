@@ -1,0 +1,24 @@
+
+model {
+  # Priors
+  phi ~ dunif(-0.99, 0.99)  # Prior pour phi (stationnarité)
+  sigma_sq ~ dunif(0.1, 1.0)  # Prior pour sigma^2
+  beta <- 1 / sqrt(5 * 3.141593)  # Fixer beta
+
+  # Processus latent X
+  X[1] ~ dnorm(0, 1 / (sigma_sq / (1 - phi^2)))  # Initialisation de X
+  for (i in 2:n) {
+    X[i] ~ dnorm(phi * X[i-1], 1 / sigma_sq)  # Processus AR(1)
+  }
+
+  # Observations R
+  for (i in 2:n) {
+    R[i] ~ dlnorm(X[i-1] / 2, 1)  # R[i] = exp(X[i-1]/2) * xi[i], xi[i] ~ N(0,1)
+  }
+
+  # Données Y
+  for (i in 1:n) {
+    Y[i] <- log(R[i]^2) - beta*(-1.27)  # Transformation des observations
+  }
+}
+

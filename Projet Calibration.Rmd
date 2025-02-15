@@ -1,0 +1,202 @@
+---
+title: "Projet Calibration"
+author: "Niyo D. JC"
+date: "2025-02-15"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+### 1. Simulation des données
+
+```{r}
+n <- 1000  
+phi0 <- 0.7        # Paramètre AR(1) pour X
+sigma0_sq <- 0.3   
+beta <- 1 / sqrt(5 * pi)  
+
+
+set.seed(102)   
+xi <- rnorm(n, mean = 0, sd = 1)  # Bruit xi (normalisé)
+eta <- rnorm(n, mean = 0, sd = sqrt(sigma0_sq))  # Bruit eta
+
+# Simulation du processus X (AR(1))
+X <- numeric(n)
+X[1] <- rnorm(1, mean = 0, sd = sqrt(sigma0_sq / (1 - phi0^2)))  # Initialisation stationnaire
+for (i in 2:n) {
+  X[i] <- phi0 * X[i-1] + eta[i]
+}
+
+# Simulation des rendements R
+R <- exp(X / 2) * xi
+
+# Construction des données Y
+Y <- log(R^2) - mean(log(xi^2))  # Log-transformation
+```
+
+### 2. Fonctions nécessaires pour l'estimation
+
+#### Transformée de Fourier des bruits ξ
+
+```{r}
+# Fonction pour calculer f_xi^*(x)
+f_xi_star <- function(x, beta) {
+  E <- -1.27 * beta
+  (1 / sqrt(pi)) * 2^(1i * beta * x) * gamma(1/2 + 1i * beta * x) * exp(-1i * E * x)
+}
+```
+
+#### Fonction de déconvolution ulθ(y)
+
+```{r}
+library(gsl)
+# Fonction pour calculer u_{l_theta}(y)
+u_l_theta <- function(y, phi, gamma, beta) {
+  E <- -1.27 * beta
+  z <- 1/2 + 1i * beta * y  # Argument complexe pour la fonction gamma
+  
+  # Calcul de Gamma(1/2 + i * beta * y)
+  gamma_z <- exp(lngamma_complex(z))
+  
+  # Termes de la fonction de déconvolution
+  term1 <- -1i * phi * y * (gamma^2) * exp(-0.5 * (y^2)*(gamma^2))
+  term2 <- exp(-1i * E * y) * (2^(1i * beta * y)) * gamma_z
+  
+  # Résultat final (conserver le nombre complexe)
+  (1 / (2 * sqrt(pi))) * (term1 / term2)
+}
+```
+
+#### Critère empirique à minimiser
+
+```{r}
+# Fonction pour calculer le critère empirique
+critere_empirique <- function(theta, Y, beta) {
+  phi <- theta[1]
+  sigma_sq <- theta[2]
+  gamma <- sqrt(sigma_sq / (1 - phi^2))
+  
+  # Terme ||l_theta||^2 (réel)
+  norm_l_theta_sq <- (phi^2 * gamma) / (4 * sqrt(pi))
+  
+  # Terme somme des Y_{i+1} u_{l_theta}^*(Y_i) (complexe)
+  sum_term <- 0
+  for (i in 1:(length(Y) - 1)) {
+    u_star <- Conj(u_l_theta(Y[i], phi, gamma, beta))
+    sum_term <- sum_term + Y[i+1] * u_star
+  }
+  
+  # Critère empirique (convertir en réel)
+  norm_l_theta_sq - (2 / length(Y)) * Re(sum_term)  # Prendre la partie réelle
+}
+```
+
+### 3. Estimation des paramètres
+
+```{r}
+# Plage d'initialisation pour theta
+theta_min <- c(-0.9, 0.1) 
+theta_max <- c(0.9, 2.0)
+
+# Fonction objectif pour la minimisation
+objective_function <- function(theta) {
+  critere_empirique(theta, Y, beta)
+}
+
+# Minimisation avec optim
+result <- optim(
+  par = c(0.5, 0.2),  # Initialisation arbitraire
+  fn = objective_function,
+  method = "L-BFGS-B",
+  lower = theta_min,
+  upper = theta_max
+)
+
+# Paramètres estimés
+theta_hat <- result$par
+phi_hat <- theta_hat[1]
+sigma_sq_hat <- theta_hat[2]
+
+# Affichage des résultats
+cat("Paramètres estimés :\n")
+cat("phi_hat =", phi_hat, "\n")
+cat("sigma_sq_hat =", sigma_sq_hat, "\n")
+```
+
+### Approche Bayesienne MCMC
+
+```{r}
+# Charger les packages
+library(rjags)
+library(ggmcmc)
+```
+
+```{r}
+model_string <- "
+model {
+  # Priors
+  phi ~ dunif(-0.99, 0.99)  # Prior pour phi (stationnarité)
+  sigma_sq ~ dunif(0.1, 1.0)  # Prior pour sigma^2
+  beta <- 1 / sqrt(5 * 3.141593)  # Fixer beta
+
+  # Processus latent X
+  X[1] ~ dnorm(0, 1 / (sigma_sq / (1 - phi^2)))  # Initialisation de X
+  for (i in 2:n) {
+    X[i] ~ dnorm(phi * X[i-1], 1 / sigma_sq)  # Processus AR(1)
+  }
+
+  # Observations R
+  for (i in 2:n) {
+    R[i] ~ dlnorm(X[i-1] / 2, 1)  # R[i] = exp(X[i-1]/2) * xi[i], xi[i] ~ N(0,1)
+  }
+
+  # Données Y
+  for (i in 1:n) {
+    Y[i] <- log(R[i]^2) - beta*(-1.27)  # Transformation des observations
+  }
+}
+"
+writeLines(model_string, con="modele.bug")
+```
+
+```{r}
+# Données pour JAGS
+data_list <- list(
+  R = R,
+  Y = Y,
+  xi = xi,
+  n = n
+)
+
+# Initialisation des chaînes de Markov
+inits <- list(
+  list(phi = 0.5, sigma_sq = 0.2),
+  list(phi = 0.8, sigma_sq = 0.4)
+)
+
+n.chains <- 2
+burnin <- 100
+n.iter <- 2000
+```
+
+```{r}
+options(width = 60)
+myJAGSmodel<- jags.model(file="modele.bug", 
+                         data=data_list,
+                         inits=inits, 
+                         n.chains = n.chains)
+update(myJAGSmodel,burnin)
+```
+
+```{r}
+samples <- coda.samples(myJAGSmodel, variable.names = c("phi", "sigma_sq"), n.iter = n.iter)
+```
+
+```{r}
+# Échantillonnage MCMC
+update(model, 1000)  # Phase de burn-in
+samples <- coda.samples(model, variable.names = c("phi", "sigma_sq"), n.iter = 5000)
+samples <- coda.samples(model, variable.names = c("phi", "sigma_sq"), n.iter = 5000)
+```
