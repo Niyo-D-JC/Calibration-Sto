@@ -30,10 +30,27 @@ for (i in 2:n) {
 }
 
 # Simulation des rendements R
-R <- exp(X / 2) * xi
+# R <- exp(X / 2) * xi^beta
 
 # Construction des données Y
-Y <- log(R^2) - mean(log(xi^2))  # Log-transformation
+Y <- X + beta*log(xi^2) - beta*mean(log(xi^2))  # Log-transformation
+```
+
+```{r}
+data_plot <- data.frame(
+  Time = 1:n,
+  Volatility = X,
+  Log_SV = Y
+)
+
+# Tracé des graphiques
+par(mfrow = c(2, 1), mar = c(3, 4, 2, 1))
+
+plot(data_plot$Time, data_plot$Volatility, type = "l", col = "red", 
+     main = "Trajectoire de la Volatilité", xlab = "Temps", ylab = "e^(X/2)")
+
+plot(data_plot$Time, data_plot$Log_SV, type = "l", col = "green", 
+     main = "Trajectoire du Log-SV", xlab = "Temps", ylab = "X")
 ```
 
 ### 2. Fonctions nécessaires pour l'estimation
@@ -125,6 +142,74 @@ cat("phi_hat =", phi_hat, "\n")
 cat("sigma_sq_hat =", sigma_sq_hat, "\n")
 ```
 
+### Quasi Maximum de vraisemblance
+
+```{r}
+# Fonction pour le filtre de Kalman
+kalman_filter <- function(y_t, theta, beta) {
+  phi <- theta[1]
+  sigma2 <- theta[2]
+  sigma <- sqrt(sigma2)
+  n <- length(y_t)
+  var_log_eps2 <- (beta^2)*(pi^2) / 2
+  
+  x_hat <- numeric(n)
+  P <- numeric(n)
+  
+  # Conditions initiales
+  x_hat[1] <- 0
+  P[1] <- sigma2 / (1 - phi^2)
+  
+  v_t <- numeric(n)
+  F_t <- numeric(n)
+  rap_t <- numeric(n)
+  
+  for (t in 2:n) {
+    # Étape de prédiction
+    x_hat_pred <- phi * x_hat[t-1]
+    P_pred <- phi^2 * P[t-1] + sigma2
+    y_hat_pred <- x_hat_pred
+    
+    # Innovation et variance de l'innovation
+    v_t[t] <- y_t[t] - y_hat_pred
+    F_t[t] <- P_pred + var_log_eps2
+    rap_t[t] <- (v_t[t]^2) / F_t[t]
+    
+    # Mise à jour
+    K_t <- P_pred / F_t[t]
+    x_hat[t] <- x_hat_pred + K_t * v_t[t]
+    P[t] <- (1 - K_t) * P_pred
+  }
+  
+  return(list(x_hat = x_hat, v_t = v_t[-1], F_t = F_t[-1], rap_t = rap_t[-1]))  # On ignore t=1 car pas de données pour l'innovation
+}
+
+```
+
+```{r}
+# Fonction de log-vraisemblance quasi maximale
+qml_log_likelihood <- function(theta, y_t, beta) {
+  result <- kalman_filter(y_t, theta, beta)
+  v_t <- result$v_t
+  F_t <- result$F_t
+  rap_t <- result$rap_t
+  
+  n <- length(v_t)
+  log_likelihood <- -(n / 2) * log(2 * pi) - 0.5 * sum(log(F_t)) - 0.5 * sum(rap_t)
+  return(-log_likelihood)  # On minimise donc on retourne l'opposé
+}
+
+estimate_theta_qml <- function(y_t, initial_guess, beta) {
+  result <- optim(par = initial_guess, fn = qml_log_likelihood, y_t = y_t, beta=beta, method = "L-BFGS-B", lower = c(-0.9, 0.1), upper = c(0.9, 1))
+  return(list(theta_hat = result$par, success = result$convergence == 0))
+}
+
+initial_guess <- c(0.1, 0.1)  
+result <- estimate_theta_qml(Y, initial_guess, beta)
+print(result$theta_hat)
+print(result$success)
+```
+
 ### Approche Bayesienne MCMC
 
 ```{r}
@@ -136,25 +221,21 @@ library(ggmcmc)
 ```{r}
 model_string <- "
 model {
-  # Priors
-  phi ~ dunif(-0.99, 0.99)  # Prior pour phi (stationnarité)
-  sigma_sq ~ dunif(0.1, 1.0)  # Prior pour sigma^2
-  beta <- 1 / sqrt(5 * 3.141593)  # Fixer beta
+  # Prior distributions
+  phi ~ dunif(-0.9, 0.9)  # Coefficient AR, contraint à être stationnaire
+  sigma_sq ~ dunif(0, 2)  # Variance du bruit eta
 
-  # Processus latent X
-  X[1] ~ dnorm(0, 1 / (sigma_sq / (1 - phi^2)))  # Initialisation de X
-  for (i in 2:n) {
-    X[i] ~ dnorm(phi * X[i-1], 1 / sigma_sq)  # Processus AR(1)
+  # Initialisation de X
+  X[1] ~ dnorm(0, 1 / sigma_sq)
+
+  # Processus AR pour X
+  for (i in 2:N) {
+    X[i] ~ dnorm(phi * X[i-1], 1 / sigma_sq)
   }
 
-  # Observations R
-  for (i in 2:n) {
-    R[i] ~ dlnorm(X[i-1] / 2, 1)  # R[i] = exp(X[i-1]/2) * xi[i], xi[i] ~ N(0,1)
-  }
-
-  # Données Y
-  for (i in 1:n) {
-    Y[i] <- log(R[i]^2) - beta*(-1.27)  # Transformation des observations
+  # Observations Y
+  for (i in 1:N) {
+    Y[i] ~ dnorm(X[i], 2 / (beta^2)*(3.141593^2))
   }
 }
 "
@@ -164,10 +245,9 @@ writeLines(model_string, con="modele.bug")
 ```{r}
 # Données pour JAGS
 data_list <- list(
-  R = R,
-  Y = Y,
-  xi = xi,
-  n = n
+  Y = Y,  # Données Y générées précédemment
+  N = length(Y),  # Nombre d'observations
+  beta = 1 / sqrt(5 * pi)  # Paramètre beta
 )
 
 # Initialisation des chaînes de Markov
@@ -177,8 +257,8 @@ inits <- list(
 )
 
 n.chains <- 2
-burnin <- 100
-n.iter <- 2000
+burnin <- 7000
+n.iter <- 25000
 ```
 
 ```{r}
@@ -195,8 +275,38 @@ samples <- coda.samples(myJAGSmodel, variable.names = c("phi", "sigma_sq"), n.it
 ```
 
 ```{r}
-# Échantillonnage MCMC
-update(model, 1000)  # Phase de burn-in
-samples <- coda.samples(model, variable.names = c("phi", "sigma_sq"), n.iter = 5000)
-samples <- coda.samples(model, variable.names = c("phi", "sigma_sq"), n.iter = 5000)
+# Résumé des échantillons
+summary(samples)
+```
+
+```{r}
+# Tracés des chaînes de Markov
+plot(samples)
+```
+
+```{r}
+# Vérification de la convergence avec le critère de Gelman-Rubin
+gelman.diag(samples)
+```
+
+#### Calculer la statistique de Gelman-Rubin
+
+Regarder les fonctions `ggs_Rhat` et `ggs_grb` du package `ggmcmc`. Les utiliser pour calculer le critère de Gelman-Rubin (Potential scale reduction statistic $\hat{R}$ ainsi que son évolution au fil des itérations post période de chauffe.
+
+-   Rappel règle: $\hat{R} < 1.05$ + stabilité au fil des itérations $\Rightarrow$ Pas de problème de convergence majeur diagnostiqué selon ce critère
+
+-   Calcul du critère sur l'ensemble des itérations de chaque chaîne de Markov
+
+```{r}
+samples.gg <- ggs(samples)
+ggs_Rhat(samples.gg,scaling=1.2,version_rhat = "BDA2", plot=FALSE)
+```
+
+```{r}
+ggs_autocorrelation(samples.gg)
+```
+
+```{r}
+ess <- ggs_effective(samples.gg, proportion = FALSE, plot = FALSE)
+ess
 ```
