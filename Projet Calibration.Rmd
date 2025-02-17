@@ -78,11 +78,11 @@ u_l_theta <- function(y, phi, gamma, beta) {
   gamma_z <- exp(lngamma_complex(z))
   
   # Termes de la fonction de déconvolution
-  term1 <- -1i * phi * y * (gamma^2) * exp(-0.5 * (y^2)*(gamma^2))
-  term2 <- exp(-1i * E * y) * (2^(1i * beta * y)) * gamma_z
+  term1 <- 1i*phi * y * (gamma^2) * exp(-0.5 * (y^2)*(gamma^2))
+  term2 <- exp(-1i * E * y) * (2^(1i * beta * y)) * gamma_z/sqrt(pi)
   
   # Résultat final (conserver le nombre complexe)
-  (1 / (2 * sqrt(pi))) * (term1 / term2)
+  (term1 / term2)
 }
 ```
 
@@ -200,7 +200,7 @@ qml_log_likelihood <- function(theta, y_t, beta) {
 }
 
 estimate_theta_qml <- function(y_t, initial_guess, beta) {
-  result <- optim(par = initial_guess, fn = qml_log_likelihood, y_t = y_t, beta=beta, method = "L-BFGS-B", lower = c(-0.9, 0.1), upper = c(0.9, 1))
+  result <- optim(par = initial_guess, fn = qml_log_likelihood, y_t = y_t, beta=beta, method = "L-BFGS-B", lower = c(-0.9, 0), upper = c(0.9, 1))
   return(list(theta_hat = result$par, success = result$convergence == 0))
 }
 
@@ -223,7 +223,7 @@ model_string <- "
 model {
   # Prior distributions
   phi ~ dunif(-0.9, 0.9)  # Coefficient AR, contraint à être stationnaire
-  sigma_sq ~ dunif(0, 2)  # Variance du bruit eta
+  sigma_sq ~ dunif(0, 1)  # Variance du bruit eta
 
   # Initialisation de X
   X[1] ~ dnorm(0, 1 / sigma_sq)
@@ -235,7 +235,7 @@ model {
 
   # Observations Y
   for (i in 1:N) {
-    Y[i] ~ dnorm(X[i], 2 / (beta^2)*(3.141593^2))
+    Y[i] ~ dnorm(X[i], 2 / ((beta^2)*(3.141593^2)))
   }
 }
 "
@@ -257,8 +257,8 @@ inits <- list(
 )
 
 n.chains <- 2
-burnin <- 7000
-n.iter <- 25000
+burnin <- 5000
+n.iter <- 20000
 ```
 
 ```{r}

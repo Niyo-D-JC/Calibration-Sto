@@ -2,7 +2,7 @@
 model {
   # Prior distributions
   phi ~ dunif(-0.9, 0.9)  # Coefficient AR, contraint à être stationnaire
-  sigma_sq ~ dunif(0, 2)  # Variance du bruit eta
+  sigma_sq ~ dunif(0, 1)  # Variance du bruit eta
 
   # Initialisation de X
   X[1] ~ dnorm(0, 1 / sigma_sq)
@@ -14,7 +14,7 @@ model {
 
   # Observations Y
   for (i in 1:N) {
-    Y[i] ~ dnorm(X[i], 2 / (beta^2)*(3.141593^2))
+    Y[i] ~ dnorm(X[i], 2 / ((beta^2)*(3.141593^2)))
   }
 }
 
