@@ -15,11 +15,12 @@ knitr::opts_chunk$set(echo = TRUE)
 n <- 1000  
 phi0 <- 0.7        # Paramètre AR(1) pour X
 sigma0_sq <- 0.3   
-beta <- 1 / sqrt(5 * pi)  
+beta <- 1 / (sqrt(5)* pi)  
 
 
 set.seed(102)   
 xi <- rnorm(n, mean = 0, sd = 1)  # Bruit xi (normalisé)
+# xi <- rlnorm(n, meanlog = 0, sdlog = 1)
 eta <- rnorm(n, mean = 0, sd = sqrt(sigma0_sq))  # Bruit eta
 
 # Simulation du processus X (AR(1))
@@ -33,7 +34,7 @@ for (i in 2:n) {
 # R <- exp(X / 2) * xi^beta
 
 # Construction des données Y
-Y <- X + beta*log(xi^2) - beta*mean(log(xi^2))  # Log-transformation
+Y <- X + beta*log(xi^2) - beta*(-1.27) # Log-transformation
 ```
 
 ```{r}
@@ -69,6 +70,7 @@ f_xi_star <- function(x, beta) {
 
 ```{r}
 library(gsl)
+library(pracma)
 # Fonction pour calculer u_{l_theta}(y)
 u_l_theta <- function(y, phi, gamma, beta) {
   E <- -1.27 * beta
@@ -78,8 +80,8 @@ u_l_theta <- function(y, phi, gamma, beta) {
   gamma_z <- exp(lngamma_complex(z))
   
   # Termes de la fonction de déconvolution
-  term1 <- 1i*phi * y * (gamma^2) * exp(-0.5 * (y^2)*(gamma^2))
-  term2 <- exp(-1i * E * y) * (2^(1i * beta * y)) * gamma_z/sqrt(pi)
+  term1 <- -1i*phi * y * (gamma^2) * exp(-0.5 * (y^2)*(gamma^2))
+  term2 <- 2*exp(-1i * E * y) * (2^(1i * beta * y)) * gamma_z*sqrt(pi)
   
   # Résultat final (conserver le nombre complexe)
   (term1 / term2)
@@ -90,24 +92,57 @@ u_l_theta <- function(y, phi, gamma, beta) {
 
 ```{r}
 # Fonction pour calculer le critère empirique
+inverse_fourier_ul_theta <- function(y, phi, gamma, beta) {
+  integrand <- function(t) {
+    exp(1i * y * t) * u_l_theta(t, phi, gamma, beta) #deconvolution_ul_theta(t, theta, beta)
+  }
+  quad(integrand, -15, 15)
+}
+
 critere_empirique <- function(theta, Y, beta) {
   phi <- theta[1]
   sigma_sq <- theta[2]
   gamma <- sqrt(sigma_sq / (1 - phi^2))
   
   # Terme ||l_theta||^2 (réel)
-  norm_l_theta_sq <- (phi^2 * gamma) / (4 * sqrt(pi))
+  norm_l_theta_sq <- ((phi^2) * gamma) / (4 * sqrt(pi))
   
   # Terme somme des Y_{i+1} u_{l_theta}^*(Y_i) (complexe)
   sum_term <- 0
   for (i in 1:(length(Y) - 1)) {
-    u_star <- Conj(u_l_theta(Y[i], phi, gamma, beta))
-    sum_term <- sum_term + Y[i+1] * u_star
+    u_star <-  inverse_fourier_ul_theta(Y[i], phi, gamma, beta) #  fft(u_l_theta(Y[i], phi, gamma, beta)) #
+    sum_term <- sum_term + Y[i+1] * Re(u_star)
   }
   
   # Critère empirique (convertir en réel)
-  norm_l_theta_sq - (2 / length(Y)) * Re(sum_term)  # Prendre la partie réelle
+  (norm_l_theta_sq - (2 / length(Y)) * sum_term)  # Prendre la partie réelle
 }
+```
+
+```{r}
+library(ggplot2)
+
+# Paramètres (ajuste selon ton modèle)
+phi <- 0.7
+gamma <- sqrt(0.3 / (1 - phi^2))
+beta <- beta
+
+# Génération des valeurs de t
+t_values <- seq(-20, 20, length.out = 1000)
+
+# Calcul des valeurs de u_l_theta
+u_values <- sapply(t_values, function(t) Re(u_l_theta(t, phi, gamma, beta)))
+
+# Création du dataframe pour ggplot
+df <- data.frame(t = t_values, u_l_theta = u_values)
+
+# Tracé de la fonction
+ggplot(df, aes(x = t, y = u_l_theta)) +
+  geom_line(color = "blue") +
+  ggtitle("Visualisation de u_l_theta(t, phi, gamma, beta)") +
+  xlab("t") + ylab("u_l_theta") +
+  theme_minimal()
+
 ```
 
 ### 3. Estimation des paramètres
@@ -115,7 +150,7 @@ critere_empirique <- function(theta, Y, beta) {
 ```{r}
 # Plage d'initialisation pour theta
 theta_min <- c(-0.9, 0.1) 
-theta_max <- c(0.9, 2.0)
+theta_max <- c(0.9, 1.0)
 
 # Fonction objectif pour la minimisation
 objective_function <- function(theta) {
@@ -124,7 +159,7 @@ objective_function <- function(theta) {
 
 # Minimisation avec optim
 result <- optim(
-  par = c(0.5, 0.2),  # Initialisation arbitraire
+  par = c(0.1, 0.1),  # Initialisation arbitraire
   fn = objective_function,
   method = "L-BFGS-B",
   lower = theta_min,
@@ -137,6 +172,9 @@ phi_hat <- theta_hat[1]
 sigma_sq_hat <- theta_hat[2]
 
 # Affichage des résultats
+# phi_hat = 0.7229636
+# sigma_sq_hat = 0.2765444
+# -0.05504766
 cat("Paramètres estimés :\n")
 cat("phi_hat =", phi_hat, "\n")
 cat("sigma_sq_hat =", sigma_sq_hat, "\n")
@@ -200,14 +238,13 @@ qml_log_likelihood <- function(theta, y_t, beta) {
 }
 
 estimate_theta_qml <- function(y_t, initial_guess, beta) {
-  result <- optim(par = initial_guess, fn = qml_log_likelihood, y_t = y_t, beta=beta, method = "L-BFGS-B", lower = c(-0.9, 0), upper = c(0.9, 1))
+  result <- optim(par = initial_guess, fn = qml_log_likelihood, y_t = y_t, beta=beta, method = "L-BFGS-B", lower = c(-0.9, 0.1), upper = c(0.9, 1))
   return(list(theta_hat = result$par, success = result$convergence == 0))
 }
 
-initial_guess <- c(0.1, 0.1)  
+initial_guess <- c(0.5, 0.2)  
 result <- estimate_theta_qml(Y, initial_guess, beta)
 print(result$theta_hat)
-print(result$success)
 ```
 
 ### Approche Bayesienne MCMC
@@ -247,7 +284,7 @@ writeLines(model_string, con="modele.bug")
 data_list <- list(
   Y = Y,  # Données Y générées précédemment
   N = length(Y),  # Nombre d'observations
-  beta = 1 / sqrt(5 * pi)  # Paramètre beta
+  beta = beta  # Paramètre beta
 )
 
 # Initialisation des chaînes de Markov
